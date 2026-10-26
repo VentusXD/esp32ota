@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configurar WiFi</title>
+<style>
+  body { font-family: sans-serif; max-width: 420px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 1.3rem; }
+  ul#networks { list-style: none; padding: 0; }
+  ul#networks li { padding: 8px; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 6px; cursor: pointer; display: flex; justify-content: space-between; }
+  ul#networks li:hover { background: #f2f2f2; }
+  input, button { width: 100%; padding: 10px; margin-top: 8px; box-sizing: border-box; font-size: 1rem; }
+  #status { margin-top: 12px; font-weight: bold; }
+</style>
+</head>
+<body>
+  <h1>Redes WiFi disponibles</h1>
+  <button id="refresh">Actualizar lista</button>
+  <ul id="networks"><li>Buscando redes...</li></ul>
+
+  <h2>Conectar</h2>
+  <form id="wifi-form">
+    <input type="text" id="ssid" name="ssid" placeholder="SSID" required>
+    <input type="password" id="password" name="password" placeholder="Contraseña">
+    <button type="submit">Conectar</button>
+  </form>
+  <div id="status"></div>
+
+<script>
+async function loadNetworks() {
+  const list = document.getElementById('networks');
+  list.innerHTML = '<li>Buscando redes...</li>';
+  try {
+    const res = await fetch('/scan');
+    const networks = await res.json();
+    list.innerHTML = '';
+    if (networks.length === 0) {
+      list.innerHTML = '<li>No se encontraron redes</li>';
+      return;
+    }
+    networks
+      .sort((a, b) => b.rssi - a.rssi)
+      .forEach(net => {
+        const li = document.createElement('li');
+        li.innerHTML = `<span>${net.ssid || '(oculta)'}</span><span>${net.rssi} dBm</span>`;
+        li.onclick = () => { document.getElementById('ssid').value = net.ssid; };
+        list.appendChild(li);
+      });
+  } catch (e) {
+    list.innerHTML = '<li>Error al buscar redes</li>';
+  }
+}
+
+document.getElementById('refresh').addEventListener('click', loadNetworks);
+
+let pollTimer = null;
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+function pollStatus() {
+  stopPolling();
+  let attempts = 0;
+  pollTimer = setInterval(async () => {
+    attempts++;
+    const status = document.getElementById('status');
+    try {
+      const res = await fetch('/status');
+      const data = await res.json();
+      if (data.status === 'connected') {
+        status.textContent = '✅ Conectado. IP: ' + data.ip;
+        stopPolling();
+      } else if (data.status === 'failed') {
+        status.textContent = '❌ Fallo al conectar: ' + data.reason;
+        stopPolling();
+      } else {
+        status.textContent = 'Conectando... (' + attempts + ')';
+      }
+    } catch (e) {
+      status.textContent = 'Error consultando el estado';
+    }
+    if (attempts >= 15) { // ~15s de margen
+      stopPolling();
+      if (status.textContent.startsWith('Conectando')) {
+        status.textContent = '⏱️ Sin respuesta tras 15s, revisa la contraseña o el alcance de la red';
+      }
+    }
+  }, 1000);
+}
+
+document.getElementById('wifi-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const status = document.getElementById('status');
+  status.textContent = 'Enviando...';
+  const params = new URLSearchParams();
+  params.append('ssid', document.getElementById('ssid').value);
+  params.append('password', document.getElementById('password').value);
+  try {
+    const res = await fetch('/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    });
+    const data = await res.json();
+    if (data.status === 'connecting') {
+      status.textContent = 'Intentando conectar a la red...';
+      pollStatus();
+    } else {
+      status.textContent = 'Error: ' + (data.message || 'desconocido');
+    }
+  } catch (e) {
+    status.textContent = 'Error de red al enviar el formulario';
+  }
+});
+
+loadNetworks();
+</script>
+</body>
+</html>
